@@ -1,0 +1,10 @@
+include README.md LICENSE CONTRIBUTING.md CHANGELOG.md
+recursive-include can_collector *.py *.swift
+recursive-include tests *.py
+prune captures
+prune analysis
+prune .build
+prune .venv
+prune build
+prune dist
+global-exclude .DS_Store *.py[cod]
