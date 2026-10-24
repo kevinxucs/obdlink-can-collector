@@ -4,7 +4,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Records raw classic-CAN frames from an OBDLink MX+ for later signal discovery. This version performs acquisition only; it does not infer PIDs or decode vehicle signals.
+Records raw classic-CAN frames from an OBDLink MX+ and discovers candidate signal fields offline. Known ND2 RaceChrono definitions provide training examples and correlation anchors; inferred fields retain their evidence and uncertainty.
 
 Uses Python 3.11+ with **no Python dependencies**. The Bluetooth transport compiles a small Swift helper against Apple's IOBluetooth framework. A POSIX serial transport is also included.
 
@@ -160,8 +160,45 @@ Changes are listed in [CHANGELOG.md](CHANGELOG.md). The project is licensed unde
 
 - [OBDLink Family Reference and Programming Manual, revision F](https://www.scantool.net/scantool/downloads/682/obdlink_frpm_f.pdf), particularly protocol presets, monitoring, filters and error reporting.
 - [Apple IOBluetoothDevice](https://developer.apple.com/documentation/iobluetooth/iobluetoothdevice), for paired-device access, service discovery and RFCOMM connections.
-- [MX-5 ND2 channel research](https://github.com/gitgc/mx5-miata-nd2-obd-can), for the intended vehicle context. The collector itself contains no vehicle decoders.
+- [MX-5 ND2 channel research](https://github.com/gitgc/mx5-miata-nd2-obd-can), by gitgc (MIT), for the inference engine's 15 seed definitions.
+- [Sixth-generation Mazda/MX-5 community DBC](https://github.com/berumiya/CAN_DBC_6thGenMazda), decoded and maintained by berumiya 990S labo ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)). Selected definitions are translated into this project's bit convention for a separate attribution lookup. They do not train the model or supply correlation anchors. Market/year/calibration differences are possible.
 
-## Next stage
+## Offline signal inference
 
-Feed `frames.csv` plus `session.json` and `events.jsonl` to the proposed offline inference engine. Known PID definitions can label anchor signals later; nothing in the capture format depends on a particular PID list. Exclude synthetic sessions and avoid scoring signal timing across reported gaps.
+Analyze the three newest **complete, real captures with frames**:
+
+```sh
+python3 -m can_collector infer
+```
+
+This reads existing files without opening Bluetooth or transmitting to the adapter. Each run creates a new `analysis/inference_TIMESTAMP/` directory; captures and existing analysis directories are never overwritten. Failed, empty and synthetic runs are excluded from automatic selection. Use `--latest 0` for all eligible recordings, or choose explicit recording directories:
+
+```sh
+python3 -m can_collector infer captures/FIRST captures/SECOND \
+  --output analysis/my-inference --top 100
+```
+
+`--include-incomplete` permits automatic selection of failed runs that contain frames. Explicit directories may also be incomplete; their status and loss counts appear in the report. Synthetic inputs remain excluded. Repeated evidence must come from the same vehicle/configuration; select directories explicitly when collecting from multiple vehicles.
+
+The engine:
+
+- Fits encoding priors and a nearest-example shape model from known seed channels. Only varying channels train dynamics; the model reports class support and leave-one-entire-signal-out validation, including abstentions when training is insufficient.
+- Enumerates contiguous packed 1–16-bit fields in both byte orders and byte-aligned 24/32-bit fields. It evaluates signed alternatives when they reduce jumps, preserves exact affine aliases across all frames, and excludes known seed bits from rediscovery.
+- Detects modular counters with repeated compatible wraps, rejects padded counter containers and signed counter aliases, and ranks continuous/state candidates. Fast binary activity receives no switch bonus. Overlapping alternatives are reduced to primary nonoverlapping candidates; boundaries remain hypotheses.
+- Compares candidates with varying seeds using same-session, same-bus, same-segment time bins, level/change correlation, split-half checks and circular-shift controls. It never joins separate recordings or interpolates across gaps. `--bin-seconds` defaults to 0.1 seconds.
+- Finds coincident state changes in multiple message IDs, then consults the separately attributed lookup to distinguish additional published mappings from unnamed fields.
+
+Scores are **ranking heuristics, not confidence probabilities or significance tests**. A single cold start cannot distinguish every switch, permission flag and engine-state signal. Constant channels cannot teach a mapping, and signal shapes alone cannot establish units, signedness, exact bit boundaries or physical meaning. Short stationary recordings often leave most dynamic training classes unsupported. Multiplexing and checksum algorithms are not automatically solved.
+
+Output files include `report.md`, `candidates.json`, `candidates.csv`, full per-frame `traces.csv`, `model.json`, `catalog.json`, `events.json`, a definition snapshot and `run.json` with settings and SHA-256 hashes of inputs/code. If `gnuplot` is already installed, a candidate timeline PNG and reproducible plot files are also generated; it is optional.
+
+Export an editable definition list, then use your own known channels:
+
+```sh
+python3 -m can_collector infer --export-definitions known-signals.json
+python3 -m can_collector infer --definitions known-signals.json
+```
+
+The JSON replaces the built-in definitions. Each definition has a CAN ID, bus, extended flag, `field` (`start`, `width`, `order`, `signed`), shape `kind` (`state` or `continuous`), numeric `factor`/`offset`, optional `clamp` or gear `thresholds`, unit, source and `role`. Use `seed` to train/anchor; use `validation` only for attributed comparison after selection. No equations are evaluated as code. BE starts count bits MSB0 and LE starts LSB0, with zero-based bytes; these are **not DBC sawtooth start-bit numbers**.
+
+Inference tests use independently generated packed signals, switches, counters, random decoys and rare carry transitions. They check recovery, separation of sessions/segments, constant-reference rejection, held-out leakage, attribution isolation and preservation of source files.

@@ -1,3 +1,3 @@
-"""Passive CAN acquisition. No PID interpretation or diagnostic polling."""
+"""Passive CAN acquisition and offline signal inference. No diagnostic polling."""
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — 2026-10-23
+
+- Add offline `infer` with known-signal training, packed field discovery, counter filtering and same-session signal associations.
+- Preserve aliases, raw traces, input hashes, training support and held-out validation in reproducible reports.
+- Separate attributed community mappings from unverified fields and detect shared state-change events.
+- Support custom JSON seed definitions and optional gnuplot timelines without adding Python dependencies.
+
 ## 0.1.1 — 2026-10-22
 
 - Record classic-CAN frames through native macOS Bluetooth or a POSIX serial port.

@@ -2,6 +2,7 @@ import argparse
 from collections import Counter
 import csv
 from dataclasses import asdict
+from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
@@ -36,7 +37,7 @@ def filter_arg(value: str):
 
 
 def arguments(argv=None):
-    parser = argparse.ArgumentParser(description="Passive OBDLink CAN collector for macOS. No diagnostic polling.")
+    parser = argparse.ArgumentParser(description="Passive OBDLink CAN collection and offline signal inference. No diagnostic polling.")
     commands = parser.add_subparsers(dest="action", required=True)
     devices = commands.add_parser("devices", help="list paired OBD Bluetooth devices and serial ports")
     devices.add_argument("--all", action="store_true", help="also list paired Bluetooth devices without OBD in their name")
@@ -65,6 +66,16 @@ def arguments(argv=None):
         command.add_argument("--command-timeout", type=positive, default=4, help="adapter command timeout in seconds")
     inspect = commands.add_parser("inspect", help="show capture quality and frame counts per CAN ID")
     inspect.add_argument("session", type=Path)
+    infer = commands.add_parser("infer", help="discover candidate fields offline using known definitions as training anchors")
+    infer.add_argument("sessions", type=Path, nargs="*", help="explicit capture directories; otherwise select latest complete real captures")
+    infer.add_argument("--captures", type=Path, default=Path("captures"), help="capture root for automatic selection")
+    infer.add_argument("--latest", type=nonnegative, default=3, help="number of latest eligible captures, 0=all; default 3")
+    infer.add_argument("--include-incomplete", action="store_true", help="include failed captures with frames during automatic selection")
+    infer.add_argument("--definitions", type=Path, help="custom JSON definitions replacing the built-in RaceChrono seeds and attribution lookup")
+    infer.add_argument("--output", type=Path, help="new analysis directory; defaults to analysis/inference_TIMESTAMP")
+    infer.add_argument("--top", type=nonnegative, default=100, help="maximum ranked fields to export; default 100")
+    infer.add_argument("--bin-seconds", type=positive, default=.1, help="same-session correlation bin width; default 0.1 seconds")
+    infer.add_argument("--export-definitions", type=Path, help="write editable definition JSON and exit; file must not exist")
     return parser.parse_args(argv)
 
 
@@ -189,7 +200,45 @@ def main(argv=None) -> int:
             return 0
         if args.action == "inspect":
             return inspect_session(args.session)
+        if args.action == "infer":
+            return run_inference(args)
         return run_capture(args)
     except (OSError, ValueError, TransportError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+
+def run_inference(args) -> int:
+    # Lazy import: the collector's acquisition path remains independent.
+    from .inference import InferenceEngine, load_recording, select_recordings
+    from .inference_report import export_analysis
+    from .signals import definitions_json, load_definitions
+
+    definitions = load_definitions(args.definitions)
+    if args.export_definitions:
+        with args.export_definitions.open("x") as stream:
+            json.dump(definitions_json(definitions), stream, indent=2, allow_nan=False)
+            stream.write("\n")
+        print(f"Definitions: {args.export_definitions.resolve()}")
+        return 0
+    if args.top == 0:
+        raise ValueError("--top must be at least 1")
+    directory = args.output or Path("analysis") / datetime.now(timezone.utc).strftime("inference_%Y%m%dT%H%M%S_%fZ")
+    if directory.exists():
+        raise ValueError(f"Output already exists: {directory}; choose a new analysis directory")
+    paths, skipped = (args.sessions, []) if args.sessions else select_recordings(args.captures, args.latest, args.include_incomplete)
+    if not paths:
+        raise ValueError("No eligible real captures with frames found")
+    if len({path.resolve() for path in paths}) != len(paths):
+        raise ValueError("Duplicate capture paths would double-count evidence")
+    if len({path.resolve().name for path in paths}) != len(paths):
+        raise ValueError("Capture directory names must be unique for unambiguous trace labels")
+    recordings = [load_recording(path) for path in paths]
+    for r in recordings:
+        print(f"Input: {r.name}: {r.frames:,} frames, {r.duration:.3f}s, {r.metadata['stats'].get('capture_gaps', 0)} reported gaps", flush=True)
+    engine = InferenceEngine(recordings, definitions, args.bin_seconds, progress=lambda m: print(m, flush=True))
+    candidates, counts = engine.run(args.top)
+    report = export_analysis(directory, engine, candidates, counts, skipped)
+    print(f"Saved {len(candidates)} ranked field candidates: {report}")
+    print(f"Dynamic training support: {engine.model.export()['dynamic_class_support']}; scores are not probabilities.")
+    return 0

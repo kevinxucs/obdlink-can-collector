@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "obdlink-can-collector"
-version = "0.1.1"
-description = "Passive OBDLink CAN collector for macOS"
+version = "0.2.0"
+description = "Passive OBDLink CAN collector and offline signal inference for macOS"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
